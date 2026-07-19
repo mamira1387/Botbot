@@ -1,0 +1,9 @@
+{
+  "name": "telegram-depth-ton-bot",
+  "version": "1.0.0",
+  "main": "api/webhook.js",
+  "dependencies": {
+    "grammy": "^1.21.1",
+    "@supabase/supabase-js": "^2.39.8"
+  }
+}
