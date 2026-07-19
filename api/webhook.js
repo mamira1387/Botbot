@@ -298,4 +298,14 @@ bot.on("message:text", async (ctx) => {
 });
 
 // اکسپورت به عنوان هندلر برای Vercel Serverless
-module.exports = webhookCallback(bot, "http");
+const cb = webhookCallback(bot, "http");
+
+module.exports = async (req, res) => {
+    // اگر درخواست از نوع POST نبود (مثلاً مرورگر باز شده بود)، ارور نده و یک متن ساده بفرست
+    if (req.method !== "POST") {
+        res.status(200).send("Bot is running... Please send POST requests from Telegram.");
+        return;
+    }
+    // اگر درخواست POST بود، آن را به تلگرام پاس بده
+    return cb(req, res);
+};
