@@ -1,17 +1,18 @@
 const { Bot, webhookCallback, InlineKeyboard } = require("grammy");
 const { createClient } = require("@supabase/supabase-js");
 
-// --- تنظیمات اولیه و اتصال به Supabase ---
+// --- دریافت متغیرهای محیطی ---
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const OWNER_ID = parseInt(process.env.OWNER_ID);
+const OWNER_ID = parseInt(process.env.OWNER_ID || "0");
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const bot = new Bot(BOT_TOKEN);
 
-// --- توابع کمکی تبدیل متن به عدد دپث‌تون ---
+// --- توابع کمکی ---
 function parseAmount(text) {
+    if (!text) return null;
     let clean = text.toLowerCase().trim();
     const farsiDigits = ['۰','۱','۲','۳','۴','۵','۶','۷','۸','۹'];
     const engDigits = ['0','1','2','3','4','5','6','7','8','9'];
@@ -31,39 +32,56 @@ function parseAmount(text) {
 }
 
 async function registerUser(userId, username) {
-    await supabase.from('users').upsert({ user_id: userId, username: username || '' }, { onConflict: 'user_id' });
+    try {
+        await supabase.from('users').upsert(
+            { user_id: userId, username: username || '' }, 
+            { onConflict: 'user_id' }
+        );
+    } catch (e) {
+        console.error("User Register Error:", e);
+    }
 }
 
 async function isAdmin(userId) {
     if (userId === OWNER_ID) return true;
-    const { data } = await supabase.from('admins').select('telegram_id').eq('telegram_id', userId).single();
-    return !!data;
+    try {
+        const { data } = await supabase.from('admins').select('telegram_id').eq('telegram_id', userId).single();
+        return !!data;
+    } catch (e) {
+        return false;
+    }
 }
 
-// --- متن راهنمای ربات ---
 const helpText = `📚 **راهنمای کامل ربات کیف پول مجازی دپث‌تون**
 
 💳 **دستورات عمومی کاربران:**
+• /start - شروع کار با ربات
 • /wallet - مشاهده موجودی و شناسه ولت
 • /help - نمایش همین راهنما
 
-💸 **روش‌های انتقال دپث‌تون:**
+💸 **روش‌های انتقال دپث‌تون (پیوی و گروه):**
 ۱. **روش ریپلای:** روی پیام فرد ریپلای کنید و مبلغ را بفرستید (مثال: \`10k\` یا \`۱۰کا\` یا \`5000\`).
 ۲. **روش آیدی ولت:** متن زیر را بفرستید:
 \`انتقال 10k به 12345678\` (جای عدد آخر، شناسه ولت شخص را بزنید).
 
-🧾 **ساخت قبض:**
-• متن روبرو را بفرستید: \`ساخت قبض ۱۰کا دپث ۵ بار مصرف\`
+🧾 **ساخت قبض (پرداخت گروهی/پیوی):**
+• متن زیر را ارسال کنید:
+\`ساخت قبض ۱۰کا دپث ۵ بار مصرف\`
 
 ⚙️ **دستورات ادمین و مالک:**
 • \`/login username password\` - ورود ادمین‌ها
-• \`add ton 10k\` - افزایش موجودی (ریپلای یا نوشتن آیدی در آخر)
-• \`کسر 10k\` - کم کردن موجودی (ریپلای یا نوشتن آیدی در آخر)
+• \`add ton 10k\` - افزایش موجودی (ریپلای یا آیدی عددی در انتهای دستور)
+• \`کسر 10k\` - کم کردن موجودی (ریپلای یا آیدی عددی در انتهای دستور)
 
 👑 **دستورات ویژه مالک:**
 • \`/addadmin user pass\` | \`/deladmin user\``;
 
-// --- دستورات ربات ---
+// --- دستورات پایه ---
+bot.command("start", async (ctx) => {
+    await registerUser(ctx.from.id, ctx.from.username);
+    await ctx.reply("سلام! به ربات کیف پول مجازی دپث‌تون خوش آمدید. 👋\n\nبرای مشاهده تمام امکانات و راهنما، دستور /help را ارسال کنید.");
+});
+
 bot.command("help", async (ctx) => {
     await ctx.reply(helpText, { parse_mode: "Markdown" });
 });
@@ -101,38 +119,40 @@ bot.command("login", async (ctx) => {
         const { data } = await supabase.from('admins').select('password').eq('username', args[0]).single();
         if (data && data.password === args[1]) {
             await supabase.from('admins').update({ telegram_id: ctx.from.id }).eq('username', args[0]);
-            await ctx.reply("✅ با موفقیت به عنوان ادمین وارد شدید و اکانت شما ثبت شد.");
+            await ctx.reply("✅ با موفقیت به عنوان ادمین وارد شدید.");
         } else {
-            await ctx.reply("❌ نام کاربری یا رمز عبور اشتباه است.");
+            await ctx.reply("❌ مشخصات ورود نامعتبر است.");
         }
     }
 });
 
-// --- هندل کردن دکمه‌های شیشه‌ای تایید ---
+// --- مدیریت دکمه‌های شیشه‌ای ---
 bot.on("callback_query:data", async (ctx) => {
     const data = ctx.callbackQuery.data;
     const fromId = ctx.from.id;
 
+    await ctx.answerCallbackQuery().catch(() => {});
+
     if (data === "tx_cancel") {
-        await ctx.editMessageText("❌ انتقال توسط فرستنده لغو شد.");
+        await ctx.editMessageText("❌ تراکنش توسط فرستنده لغو شد.");
         return;
     }
 
+    // تایید انتقال مستقیم
     if (data.startsWith("tx_confirm_")) {
         const [, , senderIdStr, toIdStr, amountStr] = data.split("_");
         const senderId = parseInt(senderIdStr);
         const toId = parseInt(toIdStr);
         const amount = parseFloat(amountStr);
 
-        if (fromId !== senderId) return; // فقط فرستنده اصلی حق تایید دارد
+        if (fromId !== senderId) return;
 
         if (!(await isAdmin(senderId))) {
             const { data: userData } = await supabase.from('users').select('balance').eq('user_id', senderId).single();
             if (!userData || userData.balance < amount) {
-                await ctx.editMessageText("❌ تراکنش ناموفق. موجودی شما کافی نیست.");
+                await ctx.editMessageText("❌ تراکنش ناموفق. موجودی کافی نیست.");
                 return;
             }
-            await supabase.rpc('increment_balance', { x: -amount, row_id: senderId }); // یا کوئری آپدیت معمولی
             await supabase.from('users').update({ balance: userData.balance - amount }).eq('user_id', senderId);
         }
 
@@ -140,16 +160,25 @@ bot.on("callback_query:data", async (ctx) => {
         const targetBalance = targetData ? targetData.balance : 0;
         await supabase.from('users').upsert({ user_id: toId, balance: targetBalance + amount });
 
-        await ctx.editMessageText(`✅ مقدار **${amount.toLocaleString()} دپث تون** از آیدی \`${senderId}\` به آیدی \`${toId}\` با موفقیت انتقال یافت.`, { parse_mode: "Markdown" });
+        await ctx.editMessageText(`✅ مقدار **${amount.toLocaleString()} دپث تون** از آیدی \`${senderId}\` به آیدی \`${toId}\` انتقال یافت.`, { parse_mode: "Markdown" });
+        return;
     }
 
+    // دریافت قبض
     if (data.startsWith("claim_bill_")) {
         const billId = data.replace("claim_bill_", "");
         const { data: bill } = await supabase.from('bills').select('*').eq('bill_id', billId).single();
-        if (!bill) return;
+        if (!bill) {
+            await ctx.reply("❌ این قبض یافت نشد.");
+            return;
+        }
 
-        let claimers = bill.claimers ? bill.claimers.split(",") : [];
-        if (claimers.includes(fromId.toString())) return; // استفاده تکراری ممنوع
+        let claimers = bill.claimers && bill.claimers.trim() !== '' ? bill.claimers.split(",").map(i => i.trim()) : [];
+
+        if (claimers.includes(fromId.toString())) {
+            await ctx.reply("⚠️ شما قبلاً این قبض را دریافت کرده‌اید!");
+            return;
+        }
 
         if (bill.current_uses >= bill.max_uses) {
             await ctx.editMessageText("❌ ظرفیت استفاده از این قبض به پایان رسیده است.");
@@ -170,21 +199,21 @@ bot.on("callback_query:data", async (ctx) => {
         const mentions = claimers.map(id => `\`${id}\``).join(", ");
         const keyboard = remaining > 0 ? new InlineKeyboard().text("💰 دریافت دپث تون", `claim_bill_${billId}`) : undefined;
 
-        await ctx.editMessageText(`🧾 **پرداخت قبض**\n💰 قیمت: **${bill.amount.toLocaleString()} دپث تون**\n🔄 تعداد بار مصرف باقی‌مانده: **${remaining}**\n👥 آیدی دریافت‌کنندگان: ${mentions}`, {
+        await ctx.editMessageText(`🧾 **پرداخت قبض**\n💰 قیمت: **${bill.amount.toLocaleString()} دپث تون**\n🔄 تعداد بار مصرف باقی‌مانده: **${remaining}**\n👥 دریافت‌کنندگان: ${mentions}`, {
             parse_mode: "Markdown",
             reply_markup: keyboard
         });
     }
 });
 
-// --- هندل کردن متن‌ها و دستورات عامیانه ---
+// --- مدیریت پیام‌های متنی (گروه و پیوی) ---
 bot.on("message:text", async (ctx) => {
     const text = ctx.message.text;
     const fromId = ctx.from.id;
 
     await registerUser(fromId, ctx.from.username);
 
-    // ۱. دستورات مدیریت موجودی ادمین (Add ton / کسر)
+    // ۱. دستورات ادمین (Add ton / کسر)
     const isAdd = /add ton|add_ton/i.test(text);
     const isSub = text.includes("کسر");
     if ((isAdd || isSub) && (await isAdmin(fromId))) {
@@ -228,16 +257,16 @@ bot.on("message:text", async (ctx) => {
             if (!(await isAdmin(fromId))) {
                 const { data: userData } = await supabase.from('users').select('balance').eq('user_id', fromId).single();
                 if (!userData || userData.balance < (amount * maxUses)) {
-                    await ctx.reply("❌ موجودی شما برای ساخت این قبض کافی نیست.");
+                    await ctx.reply("❌ موجودی کافی نیست.");
                     return;
                 }
                 await supabase.from('users').update({ balance: userData.balance - (amount * maxUses) }).eq('user_id', fromId);
             }
             const billId = Math.random().toString(36).substring(2, 10);
-            await supabase.from('bills').insert({ bill_id: billId, amount: amount, max_uses: maxUses, creator_id: fromId });
+            await supabase.from('bills').insert({ bill_id: billId, amount: amount, max_uses: maxUses, creator_id: fromId, claimers: '' });
 
             const keyboard = new InlineKeyboard().text("💰 دریافت دپث تون", `claim_bill_${billId}`);
-            await ctx.reply(`🧾 **پرداخت قبض**\n💰 قیمت: **${amount.toLocaleString()} دپث تون**\n🔄 تعداد بار مصرف باقی‌مانده: **${maxUses}**\n👥 آیدی دریافت‌کنندگان: _هنوز کسی دریافت نکرده_`, {
+            await ctx.reply(`🧾 **پرداخت قبض**\n💰 قیمت: **${amount.toLocaleString()} دپث تون**\n🔄 تعداد بار مصرف باقی‌مانده: **${maxUses}**\n👥 دریافت‌کنندگان: _هنوز کسی دریافت نکرده_`, {
                 parse_mode: "Markdown",
                 reply_markup: keyboard
             });
@@ -245,7 +274,7 @@ bot.on("message:text", async (ctx) => {
         return;
     }
 
-    // ۳. انتقال مستقیم با آیدی ولت (انتقال 10k به 12345678)
+    // ۳. انتقال مستقیم با آیدی ولت
     if (text.startsWith("انتقال")) {
         const match = text.match(/انتقال\s+(.+?)\s+به\s+(\d+)/i);
         if (match) {
@@ -256,7 +285,7 @@ bot.on("message:text", async (ctx) => {
                 if (!(await isAdmin(fromId))) {
                     const { data: userData } = await supabase.from('users').select('balance').eq('user_id', fromId).single();
                     if (!userData || userData.balance < amount) {
-                        await ctx.reply("❌ موجودی شما کافی نیست!");
+                        await ctx.reply("❌ موجودی کافی نیست!");
                         return;
                     }
                 }
@@ -264,7 +293,7 @@ bot.on("message:text", async (ctx) => {
                     .text("✅ تایید انتقال", `tx_confirm_${fromId}_${toId}_${amount}`)
                     .text("❌ لغو", "tx_cancel");
 
-                await ctx.reply(`❓ آیا از انتقال **${amount.toLocaleString()} دپث تون** به ولت با شناسه \`${toId}\` مطمئن هستید؟`, {
+                await ctx.reply(`❓ آیا از انتقال **${amount.toLocaleString()} دپث تون** به ولت \`${toId}\` مطمئن هستید؟`, {
                     parse_mode: "Markdown",
                     reply_markup: keyboard
                 });
@@ -273,7 +302,7 @@ bot.on("message:text", async (ctx) => {
         return;
     }
 
-    // ۴. انتقال با ریپلای ساده (مثل 10k)
+    // ۴. انتقال با ریپلای
     const amount = parseAmount(text);
     if (amount && amount > 0 && ctx.message.reply_to_message) {
         const toId = ctx.message.reply_to_message.from.id;
@@ -282,7 +311,7 @@ bot.on("message:text", async (ctx) => {
         if (!(await isAdmin(fromId))) {
             const { data: userData } = await supabase.from('users').select('balance').eq('user_id', fromId).single();
             if (!userData || userData.balance < amount) {
-                await ctx.reply("❌ موجودی شما کافی نیست!");
+                await ctx.reply("❌ موجودی کافی نیست!");
                 return;
             }
         }
@@ -297,17 +326,14 @@ bot.on("message:text", async (ctx) => {
     }
 });
 
-// اکسپورت به عنوان هندلر برای Vercel Serverless
+// --- هندلر اختصاصی ورسل ---
 const cb = webhookCallback(bot, "http");
 
 module.exports = async (req, res) => {
-    // اگر درخواست از نوع POST نبود (مثلاً باز کردن لینک در مرورگر)، بدون ارور پاسخ بده
     if (req.method !== "POST") {
         res.statusCode = 200;
-        res.end("Bot is running... Please send POST requests from Telegram.");
+        res.end("Bot is running perfectly on Vercel Serverless!");
         return;
     }
-    // اجرا و مدیریت وب‌هوک تلگرام
     return cb(req, res);
 };
-
